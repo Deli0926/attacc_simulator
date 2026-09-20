@@ -39,10 +39,17 @@ class System:
         self.model = Transformer(modelinfos, tensor_parallel=self.GPU.num_xpu)
         self.model_set = 1
 
-    def set_accelerator(self, modelinfos, name: DeviceType, config):
+    def set_accelerator(self,
+                        modelinfos,
+                        name: DeviceType,
+                        config,
+                        ffn_sparsity=0.95):
         self.hetero_name = name
         if self.hetero_name == DeviceType.PIM:
-            ramulator = Ramulator(modelinfos, "ramulator2", "ramulator.out")
+            ramulator = Ramulator(modelinfos,
+                                  "ramulator2",
+                                  "ramulator.out",
+                                  ffn_sparsity=ffn_sparsity)
             self.devices['Acc'] = PIM(config,
                                       self.scaling_factor,
                                       ramulator)
@@ -242,7 +249,7 @@ class System:
                 for l_idx, layer in enumerate(decoder_block):
                     # Get execution time and energy
                     if layer.type in [
-                            LayerType.MATMUL, LayerType.SOFTMAX, LayerType.X2G
+                            LayerType.MATMUL, LayerType.SOFTMAX, LayerType.X2G, LayerType.FFN
                     ]:
                         exec_time, energy = self.devices[
                             'Acc'].get_time_and_energy(layer)
@@ -312,6 +319,9 @@ class System:
                 elif layer.type == LayerType.NORM:
                     s_perf['all'] += exec_time
                     s_perf['norm'] += exec_time
+                #elif layer.type == LayerType.FFN:
+                #    s_perf['all'] += exec_time
+                #    s_perf['ffn'] += exec_time
 
             g_perf = {
                 'all': 0,
@@ -335,9 +345,9 @@ class System:
                     g_perf['all'] += exec_time
                     if layer.type == LayerType.FC:
                         g_perf['fc'] += exec_time
-                        if 'ff' in layer.name:
-                            g_perf['ff'] += exec_time
-                        elif 'qkv' in layer.name:
+                        #if 'ff' in layer.name:
+                        #    g_perf['ff'] += exec_time
+                        if 'qkv' in layer.name:
                             g_perf['qkv'] += exec_time
                         elif 'proj' in layer.name:
                             g_perf['prj'] += exec_time
@@ -357,22 +367,50 @@ class System:
                             g_perf['norm'] += exec_time
                     elif layer.type == LayerType.SOFTMAX:
                         g_perf['softmax'] += exec_time
+                    elif layer.type == LayerType.FFN:
+                        g_perf['ff'] += exec_time
 
             g_perf = {k: v / (lout - 1) for k, v in g_perf.items()}
 
+            fc_energy = gen_energies.get(LayerType.FC, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
+            ffn_energy = gen_energies.get(LayerType.FFN, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
+            matmul_energy = gen_energies.get(LayerType.MATMUL, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
+            softmax_energy = gen_energies.get(LayerType.SOFTMAX, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
+            act_energy = gen_energies.get(LayerType.ACT, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
+            norm_energy = gen_energies.get(LayerType.NORM, {
+                'mem': 0,
+                'comp': 0,
+                'comm': 0
+            })
             energies = [
                 unit_energy['g_all'], unit_energy['g_offmem'],
                 unit_energy['g_l2'], unit_energy['g_l1'], unit_energy['g_reg'],
-                unit_energy['g_alu'], gen_energies[LayerType.FC]['mem'],
-                gen_energies[LayerType.FC]['comp'],
-                gen_energies[LayerType.MATMUL]['mem'] +
-                gen_energies[LayerType.SOFTMAX]['mem'],
-                gen_energies[LayerType.MATMUL]['comp'] +
-                gen_energies[LayerType.SOFTMAX]['comp'],
-                gen_energies[LayerType.ACT]['mem'] +
-                gen_energies[LayerType.NORM]['mem'],
-                gen_energies[LayerType.ACT]['comp'] +
-                gen_energies[LayerType.NORM]['comp']
+                unit_energy['g_alu'], fc_energy['mem'] + ffn_energy['mem'],
+                fc_energy['comp'] + ffn_energy['comp'],
+                matmul_energy['mem'] + softmax_energy['mem'],
+                matmul_energy['comp'] + softmax_energy['comp'],
+                act_energy['mem'] + norm_energy['mem'],
+                act_energy['comp'] + norm_energy['comp']
             ]
             comm_energy = sum([v['comm'] for k, v in gen_energies.items()])
             energies.append(comm_energy)
@@ -468,4 +506,3 @@ class System:
         kv_memory = ndec * 2 * l * (hdim) * a_byte
 
         return weight_memory, kv_memory * batch_size, temp_memory * batch_size
-

@@ -16,6 +16,7 @@ class LayerType(Enum):
     NORM = 4
     G2G = 5
     X2G = 6
+    FFN = 7 # added for seperate FC layer to FC(QKV, proj), FFN(ff1, ff2 ,ff3)
 
 
 class DeviceType(Enum):

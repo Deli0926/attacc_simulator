@@ -106,6 +106,10 @@ def main():
     parser.add_argument("--pipeopt",
                         action='store_true',
                         help="apply pipeline optimization ")
+    parser.add_argument("--ffn-sparsity",
+                        type=float,
+                        default=0.95,
+                        help="FFN MAC command sparsity for bank-level PIM")
 
     ## set model and service environment
     parser.add_argument(
@@ -135,6 +139,9 @@ def main():
 
     args = parser.parse_args()
 
+    if args.ffn_sparsity < 0 or args.ffn_sparsity >= 1:
+        raise ValueError("--ffn-sparsity must be in [0, 1).")
+
     global RAMULATOR
     if RAMULATOR:
         print("The Ramulator {}".format(RAMULATOR))
@@ -147,9 +154,9 @@ def main():
         assert 0
 
     if args.system == 'dgx-attacc':
-        print("{}: ({} x {}), PIM:{}, [Lin, Lout, batch]: {}".format(
+        print("{}: ({} x {}), PIM:{}, [Lin, Lout, batch]: {}, FFN sparsity: {}".format(
             args.system, args.gpu, args.ngpu, args.pim,
-            [args.lin, args.lout, args.batch]))
+            [args.lin, args.lout, args.batch], args.ffn_sparsity))
     else:
         print("{}: ({} x {}), [Lin, Lout, batch]: {}".format(
             args.system, args.gpu, args.ngpu,
@@ -175,7 +182,10 @@ def main():
         pim_config = make_pim_config(pim_type,
                                      InterfaceType.NVLINK3,
                                      power_constraint=args.powerlimit)
-        system.set_accelerator(modelinfos, DeviceType.PIM, pim_config)
+        system.set_accelerator(modelinfos,
+                               DeviceType.PIM,
+                               pim_config,
+                               ffn_sparsity=args.ffn_sparsity)
 
     elif args.system in ['dgx-cpu']:
         xpu_config = make_xpu_config(gpu_device)

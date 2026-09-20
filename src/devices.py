@@ -61,7 +61,7 @@ class xPU:
 
                 ## applying SM underutilization to cost function
                 num_threadblock = numOp
-                if layer.type == LayerType.FC:
+                if layer.type in [LayerType.FC, LayerType.FFN]:
                     num_threadblock = math.ceil(m / l1_tm) * math.ceil(
                         n / l1_tn) * numOp
 
@@ -113,7 +113,7 @@ class xPU:
             data = layer.get_size()
             return data, data, data, data
 
-        elif layer.type in [LayerType.FC, LayerType.MATMUL]:
+        elif layer.type in [LayerType.FC, LayerType.MATMUL, LayerType.FFN]:
             l1_tm, l1_tn, l1_tk, l2_tm, l2_tn, l2_tk = self._get_optimal_tile(
                 layer)
             reg_tm, reg_tn, reg_tk = 16, 16, 32
@@ -134,7 +134,7 @@ class xPU:
         flops = self.peak_flops * self.max_compute_util
         if self.name == DeviceType.GPU:
             num_threadblock = numOp
-            if layer.type == LayerType.FC:
+            if layer.type in [LayerType.FC, LayerType.FFN]:
                 num_threadblock = math.ceil(m / l1_tm) * math.ceil(
                     n / l1_tn) * numOp
 
@@ -177,7 +177,7 @@ class xPU:
 
             else:
                 num_threadblock = numOp
-                if layer.type == LayerType.FC:
+                if layer.type in [LayerType.FC, LayerType.FFN]:
                     num_threadblock = math.ceil(m / l1_tm) * math.ceil(
                         n / l1_tn) * numOp
 
@@ -287,7 +287,7 @@ class PIM:
     def _get_traffic(self, layer: Layer):
         # return tuple of 4 elements (off-mem, L2, L1, reg)
         m, n, k, numOp, dbyte = layer.get_infos()
-        if layer.type in [LayerType.MATMUL, LayerType.FC, LayerType.SOFTMAX]:
+        if layer.type in [LayerType.MATMUL, LayerType.FC, LayerType.SOFTMAX, LayerType.FFN]:
             data = layer.get_size()
             return data, [0], [0], [0]
 
@@ -331,6 +331,7 @@ class PIM:
             ## operational granularity = the attention layer
             if 'score' in layer.name:
                 m, n, k, numOp, dbyte = layer.get_infos()
+                # print(f'LAYER: {n}')
                 time, traffic = self.ramulator.output(
                     self.pim_type, layer, self.power_constraint)
                 io_energy = 0
@@ -364,6 +365,29 @@ class PIM:
             energy = self._get_energy(layer)
 
             return exec_time, energy
+        # 2025-08-04 / ff1, ff2, ff3 --> FFN layer changed
+        elif layer.type == LayerType.FFN:
+            #Execution time
+            m, n, k, numOp, dbyte = layer.get_infos()
+            # print(f'layer: {n}')
+            time, traffic = self.ramulator.output(
+                self.pim_type, layer, self.power_constraint)
+            io_energy = 0
+            for i in range(len(self.io_energy_table)):
+                io_energy += traffic[i] * self.io_energy_table[i]
+
+            energy_per_access = self.energy_table['mem']
+            cell_energy = traffic[-1] * energy_per_access
+            dram_energy = cell_energy + io_energy
+            effective_macs = layer.get_flops() / 2 * (
+                1 - self.ramulator.ffn_sparsity)
+            cal_energy = effective_macs * self.energy_table['alu']
+
+            # energies = ['g_offmem', 'g_l2', 'g_l1', 'g_reg', 'g_alu', 'g_comm']
+            energies = [dram_energy, 0, 0, 0, cal_energy, 0]
+            energies = [i * self.num_attacc for i in energies]
+
+            return time, energies
 
         else:
             assert 0, "PIM does not support this layer."

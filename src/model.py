@@ -6,7 +6,18 @@ import copy
 
 class Layer:
 
-    def __init__(self, stage, name, type, has_weight, dtype, m, n, k, numOp):
+    def __init__(self,
+                 stage,
+                 name,
+                 type,
+                 has_weight,
+                 dtype,
+                 m,
+                 n,
+                 k,
+                 numOp,
+                 flops_override=None,
+                 size_override=None):
         self.stage = stage
         self.name = name
         self.type = type
@@ -26,6 +37,8 @@ class Layer:
         self.bound = 'compute'  # 'memory'
         self.exec_time = 0
         self.energy = 0
+        self.flops_override = flops_override
+        self.size_override = size_override
 
         assert isinstance(type, LayerType), "Not support layer type"
         assert isinstance(dtype, DataType), "Not support data type"
@@ -34,6 +47,9 @@ class Layer:
         return self.m, self.n, self.k, self.numOp, self.dbyte
 
     def get_flops(self):
+        if self.flops_override is not None:
+            return self.flops_override
+
         if self.type == LayerType.SOFTMAX:
             return 5 * self.m * self.n * self.numOp
 
@@ -48,7 +64,7 @@ class Layer:
         elif self.type == LayerType.NORM:
             return 5 * self.m * self.n * self.numOp
 
-        elif self.type in [LayerType.FC, LayerType.MATMUL]:
+        elif self.type in [LayerType.FC, LayerType.FFN, LayerType.MATMUL]:
             return 2 * self.m * self.n * self.k * self.numOp
 
         elif self.type in [LayerType.G2G, LayerType.X2G]:
@@ -58,6 +74,9 @@ class Layer:
             assert 0, "In Function \"get_flops\": Not support layer type"
 
     def get_size(self):
+        if self.size_override is not None:
+            return self.size_override
+
         in1 = self.numOp * self.m * self.k * self.dbyte
         in2 = self.numOp * self.n * self.k * self.dbyte
         out = self.numOp * self.m * self.n * self.dbyte
@@ -132,33 +151,33 @@ class Transformer:
         if 'LLAMA' in self.name:
             self.sum_decoder.append(
                 Layer('sum', 'ff1', LayerType.FC, True, self.dtype, batch * lin,
-                      self.ff_scale * int(self.hdim / self.tp), self.hdim, 1))
+                      int(self.ff_scale * int(self.hdim / self.tp)), self.hdim, 1))
             self.sum_decoder.append(
                 Layer('sum', 'ff2', LayerType.FC, True, self.dtype, batch * lin,
-                      self.ff_scale * int(self.hdim / self.tp), self.hdim, 1))
+                      int(self.ff_scale * int(self.hdim / self.tp)), self.hdim, 1))
             self.sum_decoder.append(
                 Layer('sum', 'glu', LayerType.ACT, False, self.dtype, batch * lin,
-                      self.ff_scale * int(self.hdim / self.tp), 1, 1))
+                      int(self.ff_scale * int(self.hdim / self.tp)), 1, 1))
             self.sum_decoder.append(
                 Layer('sum', 'ff3', LayerType.FC, True, self.dtype, batch * lin,
-                      self.hdim, self.ff_scale * int(self.hdim / self.tp), 1))
+                      self.hdim, int(self.ff_scale * int(self.hdim / self.tp)), 1))
         else:
             self.sum_decoder.append(
                 Layer('sum', 'ff1', LayerType.FC, True, self.dtype, batch * lin,
-                      self.ff_scale * int(self.hdim / self.tp), self.hdim, 1))
+                      int(self.ff_scale * int(self.hdim / self.tp)), self.hdim, 1))
             if 'OPT' in self.name:
                 self.sum_decoder.append(
                     Layer('sum', 'relu', LayerType.ACT, False,
                           self.dtype, batch * lin,
-                          self.ff_scale * int(self.hdim / self.tp), 1, 1))
+                          int(self.ff_scale * int(self.hdim / self.tp)), 1, 1))
             else:
                 self.sum_decoder.append(
                     Layer('sum', 'gelu', LayerType.ACT, False,
                           self.dtype, batch * lin,
-                          self.ff_scale * int(self.hdim / self.tp), 1, 1))
+                          int(self.ff_scale * int(self.hdim / self.tp)), 1, 1))
             self.sum_decoder.append(
                 Layer('sum', 'ff2', LayerType.FC, True, self.dtype, batch * lin,
-                      self.hdim, self.ff_scale * int(self.hdim / self.tp), 1))
+                      self.hdim, int(self.ff_scale * int(self.hdim / self.tp)), 1))
         self.sum_decoder.append(
             Layer('sum', 'comm_g2g', LayerType.G2G, False, self.dtype, batch * lin,
                   self.hdim, 1, 1))
@@ -202,40 +221,35 @@ class Transformer:
                 Layer('gen', 'norm1', LayerType.NORM, False, self.dtype, batch,
                       self.hdim, 1, 1))
             if 'LLAMA' in self.name:
+                ff_dim = int(self.ff_scale * int(self.hdim / self.tp))
+                ffn_flops = 6 * batch * self.hdim * ff_dim
+                ffn_size = (
+                    (2 * batch * self.hdim + batch * ff_dim) * self.dtype_size(),
+                    (3 * self.hdim * ff_dim) * self.dtype_size(),
+                    (2 * batch * ff_dim + batch * self.hdim) * self.dtype_size(),
+                )
                 decoder.append(
-                    Layer('gen', 'ff1', LayerType.FC, True, self.dtype, batch,
-                          self.ff_scale * int(self.hdim / self.tp), self.hdim,
-                          1))
-                decoder.append(
-                    Layer('gen', 'ff2', LayerType.FC, True, self.dtype, batch,
-                          self.ff_scale * int(self.hdim / self.tp), self.hdim,
-                          1))
-                decoder.append(
-                    Layer('gen', 'glu', LayerType.ACT, False, self.dtype, batch,
-                          self.ff_scale * int(self.hdim / self.tp), 1, 1))
-                decoder.append(
-                    Layer('gen', 'ff3', LayerType.FC, True, self.dtype,
-                          batch, self.hdim,
-                          self.ff_scale * int(self.hdim / self.tp), 1))
+                    Layer('gen', 'ffn', LayerType.FFN, True, self.dtype, batch,
+                          ff_dim, self.hdim, 1, ffn_flops, ffn_size))
             else:
                 decoder.append(
                     Layer('gen', 'ff1', LayerType.FC, True, self.dtype, batch,
-                          self.ff_scale * int(self.hdim / self.tp), self.hdim,
+                          int(self.ff_scale * int(self.hdim / self.tp)), self.hdim,
                           1))
                 if 'OPT' in self.name:
                     decoder.append(
                         Layer('gen', 'relu', LayerType.ACT, False,
                               self.dtype, batch,
-                              self.ff_scale * int(self.hdim / self.tp), 1, 1))
+                              int(self.ff_scale * int(self.hdim / self.tp)), 1, 1))
                 else:
                     decoder.append(
                         Layer('gen', 'gelu', LayerType.ACT, False,
                               self.dtype, batch,
-                              self.ff_scale * int(self.hdim / self.tp), 1, 1))
+                              int(self.ff_scale * int(self.hdim / self.tp)), 1, 1))
                 decoder.append(
                     Layer('gen', 'ff2', LayerType.FC, True, self.dtype,
                           batch, self.hdim,
-                          self.ff_scale * int(self.hdim / self.tp), 1))
+                          int(self.ff_scale * int(self.hdim / self.tp)), 1))
 
             decoder.append(
                 Layer('gen', 'comm_g2g', LayerType.G2G, False, self.dtype, batch,
@@ -245,3 +259,11 @@ class Transformer:
                       self.hdim, 1, 1))
 
             self.gen_decoder.append(copy.deepcopy(decoder))
+
+    def dtype_size(self):
+        if self.dtype in [DataType.W16A16]:
+            return 2
+        elif self.dtype in [DataType.W8A8]:
+            return 1
+        else:
+            assert 0, "Only support W16A16, W8A8"
