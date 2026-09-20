@@ -331,6 +331,7 @@ class PIM:
             ## operational granularity = the attention layer
             if 'score' in layer.name:
                 m, n, k, numOp, dbyte = layer.get_infos()
+                print(f'Layer: {n}')
                 time, traffic = self.ramulator.output(
                     self.pim_type, layer, self.power_constraint)
                 io_energy = 0

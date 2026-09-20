@@ -20,7 +20,7 @@ class Layer:
         if dtype in [DataType.W16A16]:
             self.dbyte = 2
         elif dtype in [DataType.W8A8]:
-            self.dbyte = 1
+            self.dbyte = 3
         else:
             assert 0, "Only support W16A16, W8A8"
         self.bound = 'compute'  # 'memory'
@@ -202,6 +202,7 @@ class Transformer:
                 Layer('gen', 'norm1', LayerType.NORM, False, self.dtype, batch,
                       self.hdim, 1, 1))
             if 'LLAMA' in self.name:
+                print(f'STAGE{stage}: {self.ff_scale * int(self.hdim / self.tp)}')
                 decoder.append(
                     Layer('gen', 'ff1', LayerType.FC, True, self.dtype, batch,
                           self.ff_scale * int(self.hdim / self.tp), self.hdim,
